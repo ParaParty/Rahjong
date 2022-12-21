@@ -1,6 +1,6 @@
 use crate::card_type::CardType;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CaseType {
     Ke(CardType),
     Shun(CardType),

@@ -80,6 +80,17 @@ fn deal(cards: &mut Vec<CardType>) -> BTreeMap<CardType, u8> {
         })
 }
 
+fn clean_hand(hand: &mut BTreeMap<CardType, u8>) {
+    for card in hand
+        .iter()
+        .filter(|v| *v.1 == 0)
+        .map(|v| *v.0)
+        .collect::<Vec<_>>()
+    {
+        hand.remove(&card);
+    }
+}
+
 impl Cards {
     pub fn current_hand_mut(&mut self) -> &mut BTreeMap<CardType, u8> {
         self.hand_mut(self.active_player)
@@ -184,29 +195,10 @@ impl Cards {
         Some(res)
     }
 
-    pub fn play(&mut self, card: CardType) -> bool {
+    pub fn play(&mut self, card: CardType) {
         let hand = self.current_hand_mut();
-        let num = if let Some(n) = hand.get_mut(&card) {
-            n
-        } else {
-            return false;
-        };
-        if *num == 1 {
-            hand.remove(&card);
-        } else {
-            *num -= 1;
-        }
-        true
-    }
-
-    pub fn an_gang(&mut self, card: CardType) -> bool {
-        let hand = self.current_hand_mut();
-        if matches!(hand.remove(&card), Some(num) if num == 4) {
-            self.current_open_mut().push(CaseType::AnGang(card));
-            true
-        } else {
-            false
-        }
+        *hand.get_mut(&card).unwrap() -= 1;
+        clean_hand(hand);
     }
 
     pub fn check_an_gang(&self) -> Vec<CardType> {
@@ -219,82 +211,139 @@ impl Cards {
         res
     }
 
-    pub fn call(&mut self, case: CaseType, side: FengType) -> bool {
+    pub fn check_jia_gang(&self) -> Vec<CardType> {
+        let mut res = Vec::new();
+        for &case in self.current_open() {
+            match case {
+                CaseType::Ke(card) if self.current_hand().contains_key(&card) => {
+                    res.push(card);
+                }
+                _ => {}
+            }
+        }
+        res
+    }
+
+    pub fn call(&mut self, case: CaseType, side: FengType, discard: CardType) {
         match case {
-            CaseType::Shun(start) if side == self.active_player.next() => {
-                match start {
-                    CardType::Wan(t) | CardType::Tiao(t) | CardType::Tong(t)
-                        if t < NumType::Eight => {}
-                    _ => return false,
-                };
+            CaseType::Shun(start) => {
                 let hand = self.hand_mut(side);
                 let mid = start.next();
                 let end = mid.next();
-                if hand.contains_key(&start) && hand.contains_key(&mid) && hand.contains_key(&end) {
-                    let s = hand.get_mut(&start).unwrap();
-                    if *s > 1 {
-                        *s -= 1;
-                    } else {
-                        hand.remove(&start);
-                    }
-                    let m = hand.get_mut(&mid).unwrap();
-                    if *m > 1 {
-                        *m -= 1;
-                    } else {
-                        hand.remove(&mid);
-                    }
-                    let e = hand.get_mut(&end).unwrap();
-                    if *e > 1 {
-                        *e -= 1;
-                    } else {
-                        hand.remove(&end);
-                    }
-                    self.open_mut(side).push(case);
-                    self.active_player = side;
-                    true
-                } else {
-                    false
+
+                if start != discard {
+                    *hand.get_mut(&start).unwrap() -= 1;
                 }
+                if mid != discard {
+                    *hand.get_mut(&mid).unwrap() -= 1;
+                }
+                if end != discard {
+                    *hand.get_mut(&end).unwrap() -= 1;
+                }
+
+                clean_hand(hand);
+
+                self.open_mut(side).push(case);
+                self.active_player = side;
             }
-            CaseType::Ke(card) if side != self.active_player => {
+            CaseType::Ke(card) => {
                 let hand = self.hand_mut(side);
-                match hand.get_mut(&card) {
-                    Some(num) if *num >= 3 => {
-                        if *num == 3 {
-                            hand.remove(&card);
-                        } else {
-                            *num -= 3;
-                        }
-                        self.open_mut(side).push(case);
-                        self.active_player = side;
-                        true
-                    }
-                    _ => false,
-                }
+
+                *hand.get_mut(&card).unwrap() -= 2;
+
+                clean_hand(hand);
+
+                self.open_mut(side).push(case);
+                self.active_player = side;
             }
             CaseType::Gang(card) => {
-                if side == self.active_player {
-                    let open = self.current_open_mut();
-                    if let Some(index) = open.iter().position(|v| *v == CaseType::Ke(card)) {
-                        open[index] = case;
-                    }
+                if let Some(index) = self
+                    .current_open()
+                    .into_iter()
+                    .position(|case| *case == CaseType::Ke(card))
+                {
+                    self.current_open_mut()[index] = case;
                     self.draw();
-                    true
                 } else {
                     let hand = self.hand_mut(side);
-                    match hand.get(&card) {
-                        Some(num) if *num == 3 => {
-                            hand.remove(&card);
-                            self.open_mut(side).push(case);
-                            self.active_player = side;
-                            self.draw();
-                            true
-                        }
-                        _ => false,
-                    }
+                    hand.remove(&card);
+                    self.open_mut(side).push(case);
+                    self.active_player = side;
+                    self.draw();
                 }
             }
-            _ => false,
+            CaseType::AnGang(card) => {
+                let hand = self.current_hand_mut();
+                hand.remove(&card);
+                self.current_open_mut().push(case);
+                self.draw();
+            }
         }
+    }
+
+    pub fn check_call(&self, card: CardType) -> Vec<(FengType, CaseType)> {
+        let mut res = Vec::new();
+
+        let next_side = self.active_player.next();
+        let next_hand = self.hand(next_side);
+        let lastlast = match card {
+            CardType::Wan(num) | CardType::Tiao(num) | CardType::Tong(num)
+                if num >= NumType::Three =>
+            {
+                next_hand.keys().copied().find(|c| c.next().next() == card)
+            }
+            _ => None,
+        };
+        let last = match card {
+            CardType::Wan(num) | CardType::Tiao(num) | CardType::Tong(num)
+                if num >= NumType::Two =>
+            {
+                next_hand.keys().copied().find(|c| c.next() == card)
+            }
+            _ => None,
+        };
+        let next = match card {
+            CardType::Wan(num) | CardType::Tiao(num) | CardType::Tong(num)
+                if num <= NumType::Eight =>
+            {
+                next_hand.get_key_value(&card.next()).map(|v| *v.0)
+            }
+            _ => None,
+        };
+        let nextnext = match card {
+            CardType::Wan(num) | CardType::Tiao(num) | CardType::Tong(num)
+                if num <= NumType::Seven =>
+            {
+                next_hand.get_key_value(&card.next().next()).map(|v| *v.0)
+            }
+            _ => None,
+        };
+        if last.is_some() && lastlast.is_some() {
+            res.push((next_side, CaseType::Shun(lastlast.unwrap())));
+        }
+        if last.is_some() && next.is_some() {
+            res.push((next_side, CaseType::Shun(last.unwrap())));
+        }
+        if next.is_some() && nextnext.is_some() {
+            res.push((next_side, CaseType::Shun(card)));
+        }
+
+        let hands = [
+            (next_side, next_hand),
+            (next_side.next(), self.hand(next_side.next())),
+            (next_side.next().next(), self.hand(next_side.next().next())),
+        ];
+
+        for (side, hand) in hands {
+            let num = hand.get(&card).copied().unwrap_or_default();
+            if num >= 3 {
+                res.push((side, CaseType::Gang(card)));
+            }
+            if num >= 2 {
+                res.push((side, CaseType::Ke(card)));
+            }
+        }
+
+        res
     }
 }
