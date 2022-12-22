@@ -27,7 +27,7 @@ pub struct Cards {
     pub bei_open: Vec<CaseType>,
     pub active_player: FengType,
     pub drawing_hand_checkers: Vec<fn(&Hand, &Vec<CaseType>) -> Vec<CardType>>,
-    pub completion_checkers: Vec<fn(&Hand, &Vec<CaseType>) -> bool>,
+    pub completion_checkers: Vec<fn(&Hand, &Vec<CaseType>, RiverType) -> bool>,
 }
 
 fn init() -> Vec<CardType> {
@@ -364,9 +364,31 @@ impl Cards {
         discards
     }
 
-    pub fn check_completion(&self) -> bool {
-        self.completion_checkers
-            .iter()
-            .any(|f| f(self.current_hand(), self.current_open()))
+    pub fn check_zi_mo(&self, card: CardType) -> bool {
+        self.completion_checkers.iter().any(|f| {
+            f(
+                self.current_hand(),
+                self.current_open(),
+                RiverType::Drawing(card),
+            )
+        })
+    }
+
+    pub fn check_dian_pao(&self, card: CardType) -> Vec<FengType> {
+        let mut cur_side = self.active_player;
+        let mut res = Vec::new();
+        for _ in 0..3 {
+            cur_side = cur_side.next();
+            if self.completion_checkers.iter().any(|f| {
+                f(
+                    self.hand(cur_side),
+                    self.open(cur_side),
+                    RiverType::Normal(card),
+                )
+            }) {
+                res.push(cur_side);
+            }
+        }
+        res
     }
 }
