@@ -8,13 +8,15 @@ use crate::{
     river_type::RiverType,
 };
 
+type Hand = BTreeMap<CardType, u8>;
+
 #[derive(Default)]
 pub struct Cards {
     pub card_mountain: Vec<CardType>,
-    pub dong_hand: BTreeMap<CardType, u8>,
-    pub nan_hand: BTreeMap<CardType, u8>,
-    pub xi_hand: BTreeMap<CardType, u8>,
-    pub bei_hand: BTreeMap<CardType, u8>,
+    pub dong_hand: Hand,
+    pub nan_hand: Hand,
+    pub xi_hand: Hand,
+    pub bei_hand: Hand,
     pub dong_river: Vec<RiverType>,
     pub nan_river: Vec<RiverType>,
     pub xi_river: Vec<RiverType>,
@@ -24,6 +26,8 @@ pub struct Cards {
     pub xi_open: Vec<CaseType>,
     pub bei_open: Vec<CaseType>,
     pub active_player: FengType,
+    pub drawing_hand_checkers: Vec<fn(&Hand, &Vec<CaseType>) -> Vec<CardType>>,
+    pub completion_checkers: Vec<fn(&Hand, &Vec<CaseType>) -> bool>,
 }
 
 fn init() -> Vec<CardType> {
@@ -71,7 +75,7 @@ fn shuffle(cards: &mut [CardType]) {
     cards.shuffle(&mut rng);
 }
 
-fn deal(cards: &mut Vec<CardType>) -> BTreeMap<CardType, u8> {
+fn deal(cards: &mut Vec<CardType>) -> Hand {
     cards
         .split_off(cards.len() - 13)
         .into_iter()
@@ -81,7 +85,7 @@ fn deal(cards: &mut Vec<CardType>) -> BTreeMap<CardType, u8> {
         })
 }
 
-fn clean_hand(hand: &mut BTreeMap<CardType, u8>) {
+fn clean_hand(hand: &mut Hand) {
     for card in hand
         .iter()
         .filter(|v| *v.1 == 0)
@@ -93,11 +97,11 @@ fn clean_hand(hand: &mut BTreeMap<CardType, u8>) {
 }
 
 impl Cards {
-    pub fn current_hand_mut(&mut self) -> &mut BTreeMap<CardType, u8> {
+    pub fn current_hand_mut(&mut self) -> &mut Hand {
         self.hand_mut(self.active_player)
     }
 
-    pub fn hand_mut(&mut self, side: FengType) -> &mut BTreeMap<CardType, u8> {
+    pub fn hand_mut(&mut self, side: FengType) -> &mut Hand {
         match side {
             FengType::Dong => &mut self.dong_hand,
             FengType::Nan => &mut self.nan_hand,
@@ -106,11 +110,11 @@ impl Cards {
         }
     }
 
-    pub fn current_hand(&self) -> &BTreeMap<CardType, u8> {
+    pub fn current_hand(&self) -> &Hand {
         self.hand(self.active_player)
     }
 
-    pub fn hand(&self, side: FengType) -> &BTreeMap<CardType, u8> {
+    pub fn hand(&self, side: FengType) -> &Hand {
         match side {
             FengType::Dong => &self.dong_hand,
             FengType::Nan => &self.nan_hand,
@@ -346,5 +350,23 @@ impl Cards {
         }
 
         res
+    }
+
+    pub fn check_drawing_hand(&self) -> Vec<CardType> {
+        let mut discards = self
+            .drawing_hand_checkers
+            .iter()
+            .map(|f| f(self.current_hand(), self.current_open()))
+            .flatten()
+            .collect::<Vec<_>>();
+        discards.sort_unstable();
+        discards.dedup();
+        discards
+    }
+
+    pub fn check_completion(&self) -> bool {
+        self.completion_checkers
+            .iter()
+            .any(|f| f(self.current_hand(), self.current_open()))
     }
 }
