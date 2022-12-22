@@ -5,6 +5,7 @@ use rand::seq::SliceRandom;
 use crate::{
     card_type::{CardType, FengType, JianType, NumType, ZiType},
     case_type::CaseType,
+    river_type::RiverType,
 };
 
 #[derive(Default)]
@@ -14,10 +15,10 @@ pub struct Cards {
     pub nan_hand: BTreeMap<CardType, u8>,
     pub xi_hand: BTreeMap<CardType, u8>,
     pub bei_hand: BTreeMap<CardType, u8>,
-    pub dong_river: Vec<CardType>,
-    pub nan_river: Vec<CardType>,
-    pub xi_river: Vec<CardType>,
-    pub bei_river: Vec<CardType>,
+    pub dong_river: Vec<RiverType>,
+    pub nan_river: Vec<RiverType>,
+    pub xi_river: Vec<RiverType>,
+    pub bei_river: Vec<RiverType>,
     pub dong_open: Vec<CaseType>,
     pub nan_open: Vec<CaseType>,
     pub xi_open: Vec<CaseType>,
@@ -118,11 +119,11 @@ impl Cards {
         }
     }
 
-    pub fn current_river_mut(&mut self) -> &mut Vec<CardType> {
+    pub fn current_river_mut(&mut self) -> &mut Vec<RiverType> {
         self.river_mut(self.active_player)
     }
 
-    pub fn river_mut(&mut self, side: FengType) -> &mut Vec<CardType> {
+    pub fn river_mut(&mut self, side: FengType) -> &mut Vec<RiverType> {
         match side {
             FengType::Dong => &mut self.dong_river,
             FengType::Nan => &mut self.nan_river,
@@ -131,11 +132,11 @@ impl Cards {
         }
     }
 
-    pub fn current_river(&self) -> &Vec<CardType> {
+    pub fn current_river(&self) -> &Vec<RiverType> {
         self.river(self.active_player)
     }
 
-    pub fn river(&self, side: FengType) -> &Vec<CardType> {
+    pub fn river(&self, side: FengType) -> &Vec<RiverType> {
         match side {
             FengType::Dong => &self.dong_river,
             FengType::Nan => &self.nan_river,
@@ -186,19 +187,19 @@ impl Cards {
 
     pub fn draw(&mut self) -> Option<CardType> {
         let res = self.card_mountain.pop()?;
-        match self.active_player {
-            FengType::Dong => *self.dong_hand.entry(res).or_default() += 1,
-            FengType::Nan => *self.nan_hand.entry(res).or_default() += 1,
-            FengType::Xi => *self.xi_hand.entry(res).or_default() += 1,
-            FengType::Bei => *self.bei_hand.entry(res).or_default() += 1,
-        }
+        *self.current_hand_mut().entry(res).or_default() += 1;
         Some(res)
     }
 
-    pub fn play(&mut self, card: CardType) {
+    pub fn play(&mut self, discard: RiverType) {
         let hand = self.current_hand_mut();
-        *hand.get_mut(&card).unwrap() -= 1;
+        *hand
+            .get_mut(&match discard {
+                RiverType::Normal(card) | RiverType::Drawing(card) => card,
+            })
+            .unwrap() -= 1;
         clean_hand(hand);
+        self.current_river_mut().push(discard);
     }
 
     pub fn check_an_gang(&self) -> Vec<CardType> {
