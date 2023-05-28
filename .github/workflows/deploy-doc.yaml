@@ -1,5 +1,8 @@
 name: Deploy doc to Github Pages
-on: { push: { tags: [v*] } }
+on: 
+  push:
+    branches:
+      - main
 
 jobs:
   build-doc:
@@ -8,8 +11,6 @@ jobs:
       - uses: actions/checkout@v3
       - name: Update Rust
         run: rustup install --profile minimal stable
-      - name: Test
-        run: cargo test
       - name: Build docs
         run: cargo doc --no-deps
       - name: Index redirect

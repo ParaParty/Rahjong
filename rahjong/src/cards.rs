@@ -2,7 +2,7 @@
 //!
 //! The core of this module is the [Cards] struct, which contains the states of the game.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rand::seq::SliceRandom;
 
@@ -12,8 +12,30 @@ use crate::{
     river_type::RiverType,
 };
 
-/// A type alias of hand cards.
 type Hand = BTreeMap<CardType, u8>;
+
+type River = Vec<RiverType>;
+
+type Open = Vec<CaseType>;
+
+type SituationChecker = fn(hand: &Hand, river: &River, open: &Open, draw: CardType) -> bool;
+
+/// Checks if a completion is met.
+pub struct Completion {
+    /// Situations that are needed for the completion.
+    ///
+    /// All situations are required.
+    pub required: Vec<&'static str>,
+    /// Situations that prevents the completion.
+    ///
+    /// All situations must not be met.
+    pub forbidden: Vec<&'static str>,
+    /// The fan(番数) of the completion.
+    pub fan: u16,
+    /// The name of the completion.
+    pub name: &'static str,
+    pub valid: bool,
+}
 
 /// The struct containing card states of the game.
 #[derive(Default)]
@@ -29,45 +51,29 @@ pub struct Cards {
     /// The cards in player 北's hand, not shown to other players, known as 手牌 in Chinese, sorted by default.
     pub bei_hand: Hand,
     /// The cards in player 东's river, shown to other players, known as 牌河 in Chinese.
-    pub dong_river: Vec<RiverType>,
+    pub dong_river: River,
     /// The cards in player 南's river, shown to other players, known as 牌河 in Chinese.
-    pub nan_river: Vec<RiverType>,
+    pub nan_river: River,
     /// The cards in player 西's river, shown to other players, known as 牌河 in Chinese.
-    pub xi_river: Vec<RiverType>,
+    pub xi_river: River,
     /// The cards in player 北's river, shown to other players, known as 牌河 in Chinese.
-    pub bei_river: Vec<RiverType>,
+    pub bei_river: River,
     /// The cards not in player 东's river, shown to other players, known as 副露 in Chinese.
-    pub dong_open: Vec<CaseType>,
+    pub dong_open: Open,
     /// The cards not in player 南's river, shown to other players, known as 副露 in Chinese.
-    pub nan_open: Vec<CaseType>,
+    pub nan_open: Open,
     /// The cards not in player 西's river, shown to other players, known as 副露 in Chinese.
-    pub xi_open: Vec<CaseType>,
+    pub xi_open: Open,
     /// The cards not in player 北's river, shown to other players, known as 副露 in Chinese.
-    pub bei_open: Vec<CaseType>,
+    pub bei_open: Open,
     /// The player who should play a card.
     pub active_player: FengType,
-    /// Functions used to indicate the cards, after which being played,
-    /// can lead to drawing hand(known as 听牌 in Chinese) state.
-    ///
-    /// When these functions are invoked, states are that the hand contains the card just being drawn.
-    /// The functions are provided with the hand(手牌) and the open(副露),
-    /// and each should return the cards, after which being played,
-    /// can lead to drawing hand(听牌) state.
-    pub drawing_hand_checkers: Vec<fn(&Hand, &Vec<CaseType>) -> Vec<CardType>>,
+    /// Functions used to indicate the situations of a player,
+    /// including the name of the situation,
+    /// and whether the situation is met.
+    pub situation_checkers: HashMap<&'static str, SituationChecker>,
     /// Functions used to indicate if the current state satisfies a complete(known as 和牌 in Chinese) condition.
-    ///
-    /// When these functions are invoked,
-    /// if the `RiverType` is `Drawing`,
-    /// it indicates that the card is drawn from the mountain,
-    /// and states are that the hand contains the card being drawn,
-    /// or else the `RiverType` is `Normal`,
-    /// it indicates that the card is played by other players,
-    /// and states are that the hand **DOES NOT** contain the card just being played.
-    ///
-    /// The functions are provided with the hand(手牌), the open(副露),
-    /// and the card just being drawn or played.
-    /// These functions should return a bool, each indicating whether a complete(和牌) condition is met.
-    pub completion_checkers: Vec<fn(&Hand, &Vec<CaseType>, RiverType) -> bool>,
+    pub completion_checkers: Vec<Completion>,
 }
 
 /// Initialize the mountain without shuffle.
@@ -128,16 +134,20 @@ fn deal(cards: &mut Vec<CardType>) -> Hand {
         })
 }
 
-/// Remove cards in hand that have a zero count for convenience.
-fn clean_hand(hand: &mut Hand) {
-    for card in hand
-        .iter()
-        .filter(|v| *v.1 == 0)
-        .map(|v| *v.0)
-        .collect::<Vec<_>>()
-    {
-        hand.remove(&card);
+/// Remove a card from hand.
+///
+/// Returns if the hand contained the card.
+fn remove_from_hand(hand: &mut Hand, card: CardType) -> bool {
+    match hand.get_mut(&card) {
+        Some(1) => {
+            hand.remove(&card);
+        }
+        Some(0) | None => return false,
+        Some(count) => {
+            *count -= 1;
+        }
     }
+    true
 }
 
 impl Cards {
@@ -256,7 +266,8 @@ impl Cards {
     /// Returns `None` if there are no more cards in mountain,
     /// or else the card been drawn.
     ///
-    /// The hand of the active player will be given the drawn card.
+    /// After this call,
+    /// the hand of the active player will have been given the drawn card.
     pub fn draw(&mut self) -> Option<CardType> {
         let res = self.card_mountain.pop()?;
         *self.current_hand_mut().entry(res).or_default() += 1;
@@ -267,24 +278,19 @@ impl Cards {
     /// the card should be in `RiverType::Drawing`, otherwise `RiverType::Normal`.
     /// The card is automatically added to the player's river.
     ///
-    /// Note that it's the caller's duty to ensure the card exists in the active player's hand,
-    /// otherwise this function panics.
-    ///
-    /// # Panics
-    ///
-    /// This functions panics if the card does not *exist* in the active player's hand.
-    ///
-    /// Here, the word *exist* means `self.current_hand().contains_key(&card)` returns `false`,
-    /// where the `card` is the `CardType` in `RiverType`.
-    pub fn play(&mut self, discard: RiverType) {
+    /// Returns whether the card was in hand.
+    pub fn play(&mut self, discard: RiverType) -> bool {
         let hand = self.current_hand_mut();
-        *hand
-            .get_mut(&match discard {
-                RiverType::Normal(card) | RiverType::Drawing(card) => card,
-            })
-            .unwrap() -= 1;
-        clean_hand(hand);
+        if !remove_from_hand(
+            hand,
+            match discard {
+                RiverType::Drawing(c) | RiverType::Normal(c) => c,
+            },
+        ) {
+            return false;
+        }
         self.current_river_mut().push(discard);
+        true
     }
 
     /// Checks if the active player can 暗杠.
@@ -322,66 +328,103 @@ impl Cards {
     ///
     /// After the call action, the active player, the hand and open of the caller player will be changed if needed.
     ///
-    /// Note that the card is not removed from the original player's river.
+    /// Returns whether the call succeeded.
     ///
-    /// # Panics
-    ///
-    /// It's the caller's duty to ensure that the call action is legal.
-    /// Otherwise this function may misbehave and panic.
-    pub fn call(&mut self, case: CaseType, side: FengType, discard: CardType) {
+    /// Will not draw a card.
+    pub fn call(
+        &mut self,
+        case: CaseType,
+        side: FengType,
+        discard: CardType,
+        mut hitchhiker: Vec<CardType>,
+    ) -> bool {
         match case {
-            CaseType::Shun(start) => {
+            CaseType::Shun(start)
+                if hitchhiker
+                    .iter()
+                    .all(|c| self.hand_mut(side).contains_key(c))
+                    && {
+                        hitchhiker.push(discard);
+                        hitchhiker.sort_unstable();
+                        hitchhiker.len() == 3
+                            && hitchhiker[0].next() == hitchhiker[1]
+                            && hitchhiker[1].next() == hitchhiker[2]
+                            && hitchhiker[0] < hitchhiker[2]
+                            && hitchhiker[0] == start
+                    } =>
+            {
                 let hand = self.hand_mut(side);
-                let mid = start.next();
-                let end = mid.next();
-
-                if start != discard {
-                    *hand.get_mut(&start).unwrap() -= 1;
+                for c in hitchhiker {
+                    remove_from_hand(hand, c);
                 }
-                if mid != discard {
-                    *hand.get_mut(&mid).unwrap() -= 1;
-                }
-                if end != discard {
-                    *hand.get_mut(&end).unwrap() -= 1;
-                }
-
-                clean_hand(hand);
 
                 self.open_mut(side).push(case);
                 self.active_player = side;
+
+                true
             }
-            CaseType::Ke(card) => {
+            CaseType::Ke(card)
+                if hitchhiker.len() == 2
+                    && hitchhiker.iter().all(|&c| c == card)
+                    && card == discard
+                    && self.hand_mut(side).get(&card).copied().unwrap_or(0) >= 2 =>
+            {
                 let hand = self.hand_mut(side);
 
-                *hand.get_mut(&card).unwrap() -= 2;
-
-                clean_hand(hand);
+                remove_from_hand(hand, card);
+                remove_from_hand(hand, card);
 
                 self.open_mut(side).push(case);
                 self.active_player = side;
+
+                true
             }
-            CaseType::Gang(card) => {
-                if let Some(index) = self
-                    .current_open()
+            CaseType::Gang(card)
+                if hitchhiker.len() == 3
+                    && hitchhiker.iter().all(|&c| c == card)
+                    && card == discard
+                    && self.hand_mut(side).get(&card).copied().unwrap_or(0) >= 3 =>
+            {
+                let hand = self.hand_mut(side);
+                hand.remove(&card);
+                self.open_mut(side).push(case);
+                self.active_player = side;
+
+                true
+            }
+            CaseType::Gang(card)
+                if hitchhiker.len() == 4
+                    && hitchhiker.iter().all(|&c| c == card)
+                    && card == discard
+                    && self.current_hand().contains_key(&card)
+                    && side == self.active_player =>
+            {
+                if let Some(case) = self
+                    .open_mut(side)
                     .into_iter()
-                    .position(|case| *case == CaseType::Ke(card))
+                    .find(|&&mut o| o == CaseType::Ke(card))
                 {
-                    self.current_open_mut()[index] = case;
-                    self.draw();
+                    *case = CaseType::Gang(card);
+                    self.current_hand_mut().remove(&card);
+                    true
                 } else {
-                    let hand = self.hand_mut(side);
-                    hand.remove(&card);
-                    self.open_mut(side).push(case);
-                    self.active_player = side;
-                    self.draw();
+                    false
                 }
             }
-            CaseType::AnGang(card) => {
+            CaseType::AnGang(card)
+                if hitchhiker.len() == 4
+                    && hitchhiker.into_iter().all(|c| c == card)
+                    && card == discard
+                    && self.current_hand().get(&card).copied().unwrap_or(0) == 4
+                    && side == self.active_player =>
+            {
                 let hand = self.current_hand_mut();
                 hand.remove(&card);
                 self.current_open_mut().push(case);
-                self.draw();
+
+                true
             }
+            _ => false,
         }
     }
 
@@ -455,60 +498,83 @@ impl Cards {
         res
     }
 
-    /// Checks if the active player can make themselves drawing hand(听牌).
+    /// Checks if side wins.
     ///
-    /// Returns an array of cards that after which being played
-    /// can lead to drawing hand(听牌) state.
-    ///
-    /// The returned array has been sorted and deduplicated.
-    pub fn check_drawing_hand(&self) -> Vec<CardType> {
-        let mut discards = self
-            .drawing_hand_checkers
+    /// Returns the completions.
+    pub fn win(&self, side: FengType, last_card: CardType) -> impl Iterator<Item = &Completion> {
+        let situations: HashSet<_> = self
+            .situation_checkers
             .iter()
-            .map(|f| f(self.current_hand(), self.current_open()))
-            .flatten()
-            .collect::<Vec<_>>();
-        discards.sort_unstable();
-        discards.dedup();
-        discards
-    }
-
-    /// Checks if the active player's hand is complete(自摸和牌).
-    ///
-    /// The caller should provide the card the active player just has drawn.
-    ///
-    /// Returns true if any completion checkers returns true, otherwise false.
-    pub fn check_zi_mo(&self, card: CardType) -> bool {
-        self.completion_checkers.iter().any(|f| {
-            f(
-                self.current_hand(),
-                self.current_open(),
-                RiverType::Drawing(card),
-            )
+            .filter(|(_, f)| {
+                f(
+                    self.hand(side),
+                    self.river(side),
+                    self.open(side),
+                    last_card,
+                )
+            })
+            .map(|t| *t.0)
+            .collect();
+        self.completion_checkers.iter().filter(move |item| {
+            item.required.iter().all(|r| situations.contains(r))
+                && !item.forbidden.iter().any(|f| situations.contains(f))
         })
     }
 
-    /// Checks if any other player will complete(荣和)
-    /// given the card the active player has just played.
-    /// 
-    /// The caller should provide the card the active player just has played.
-    /// 
-    /// Returns the players who would complete given the card being played.
-    pub fn check_dian_pao(&self, card: CardType) -> Vec<FengType> {
-        let mut cur_side = self.active_player;
-        let mut res = Vec::new();
-        for _ in 0..3 {
-            cur_side = cur_side.next();
-            if self.completion_checkers.iter().any(|f| {
-                f(
-                    self.hand(cur_side),
-                    self.open(cur_side),
-                    RiverType::Normal(card),
-                )
-            }) {
-                res.push(cur_side);
-            }
-        }
-        res
-    }
+    // /// Checks if the active player can make themselves drawing hand(听牌).
+    // ///
+    // /// Returns an array of cards that after which being played
+    // /// can lead to drawing hand(听牌) state.
+    // ///
+    // /// The returned array has been sorted and deduplicated.
+    // pub fn check_drawing_hand(&self) -> Vec<CardType> {
+    //     let mut discards = self
+    //         .drawing_hand_checkers
+    //         .iter()
+    //         .map(|f| f(self.current_hand(), self.current_open()))
+    //         .flatten()
+    //         .collect::<Vec<_>>();
+    //     discards.sort_unstable();
+    //     discards.dedup();
+    //     discards
+    // }
+
+    // /// Checks if the active player's hand is complete(自摸和牌).
+    // ///
+    // /// The caller should provide the card the active player just has drawn.
+    // ///
+    // /// Returns true if any completion checkers returns true, otherwise false.
+    // pub fn check_zi_mo(&self, card: CardType) -> bool {
+    //     self.completion_checkers.iter().any(|f| {
+    //         f(
+    //             self.current_hand(),
+    //             self.current_open(),
+    //             RiverType::Drawing(card),
+    //         )
+    //     })
+    // }
+
+    // /// Checks if any other player will complete(荣和)
+    // /// given the card the active player has just played.
+    // ///
+    // /// The caller should provide the card the active player just has played.
+    // ///
+    // /// Returns the players who would complete given the card being played.
+    // pub fn check_dian_pao(&self, card: CardType) -> Vec<FengType> {
+    //     let mut cur_side = self.active_player;
+    //     let mut res = Vec::new();
+    //     for _ in 0..3 {
+    //         cur_side = cur_side.next();
+    //         if self.completion_checkers.iter().any(|f| {
+    //             f(
+    //                 self.hand(cur_side),
+    //                 self.open(cur_side),
+    //                 RiverType::Normal(card),
+    //             )
+    //         }) {
+    //             res.push(cur_side);
+    //         }
+    //     }
+    //     res
+    // }
 }
